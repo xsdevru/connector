@@ -127,6 +127,11 @@ return [
             'path' => storage_path('logs/laravel.log'),
         ],
 
+        'rabbitmq' => [
+            'driver' => 'single',
+            'path' => storage_path('logs/rabbitmq.log'),
+            'level' => 'debug',
+        ],
     ],
 
 ];

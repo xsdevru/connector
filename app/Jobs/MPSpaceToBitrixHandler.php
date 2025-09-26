@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Models\BitrixRestCommand;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Queue\InteractsWithQueue;
@@ -12,7 +13,7 @@ class MPSpaceToBitrixHandler implements ShouldQueue
 {
     use InteractsWithQueue, Queueable, SerializesModels;
 
-    protected $data;
+    protected array $data;
 
     public function __construct(array $data)
     {
@@ -21,21 +22,57 @@ class MPSpaceToBitrixHandler implements ShouldQueue
 
     public function handle()
     {
+        Log::channel('rabbitmq')->info('Incoming RabbitMQ event', [
+            'data' => $this->data
+        ]);
+
+        // Принудительно сбрасываем буфер в файл
+        foreach (Log::channel('rabbitmq')->getLogger()->getHandlers() as $handler) {
+            $handler->close();
+        }
+        error_log(json_encode($this->data, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT) . PHP_EOL, 3, storage_path('logs/rabbitmq.log'));
+        throw new \Exception('Temporary peek, do not ack');
+        /*
         $eventType = $this->data['event_type'] ?? null;
         $payload = $this->data['payload'] ?? [];
         $metadata = $this->data['metadata'] ?? [];
 
-        // Генерируем CREST команды
+        // Генерация CREST-команд
         $crestCommands = $this->generateCrestCommands($eventType, $payload, $metadata);
 
-        // Логируем команды
-        Log::info('DEBUG: MPSpace -> Bitrix CREST команды (не отправлены)', $crestCommands);
+        // Полный JSON события для отладки
+        $eventJson = json_encode($this->data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 
-        // Выбрасываем исключение, чтобы сообщение оставалось в очереди
-        throw new \Exception('DEBUG: сообщение оставлено непрочитанным');
+        $groupId = uniqid('group_'); // уникальная группа команд для retry
+
+        foreach ($crestCommands as $crestCommand) {
+            try {
+                BitrixRestCommand::create([
+                    'job_id' => isset($this->job) ? $this->job->getJobId() : null,,
+                    'group_id' => $groupId,
+                    'method' => $crestCommand['method'],
+                    'params' => $crestCommand['params'],
+                    'status' => 'pending',
+                    'source' => $metadata['source'] ?? null,
+                    'debug' => filter_var($metadata['debug'] ?? false, FILTER_VALIDATE_BOOLEAN),
+                    'debug_payload' => $eventJson,
+                ]);
+            } catch (\Throwable $e) {
+                Log::error('Ошибка при сохранении BitrixRestCommand', [
+                    'exception' => $e->getMessage(),
+                    'data' => $this->data
+                ]);
+
+                // Пробрасываем исключение, чтобы воркер знал, что Job упала
+                throw $e;
+            }
+        }
+
+        Log::info('DEBUG: MPSpace события сохранены в таблицу', ['group_id' => $groupId]);
+        */
     }
 
-    protected function generateCrestCommands($eventType, $payload, $metadata)
+    protected function generateCrestCommands($eventType, $payload, $metadata): array
     {
         $commands = [];
 
